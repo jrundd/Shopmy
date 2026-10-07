@@ -148,6 +148,8 @@ def extract_shop_results(blob, found, debug=False):
             continue
         if debug and not _shown_keys:
             print(f"[debug] product fields: {list(r.keys())}")
+            print(f"[debug] CURATORS: {json.dumps(r.get('curators'))[:1200]}")
+            print(f"[debug] CIRCLE: {json.dumps(r.get('circleCurators'))[:300]}")
             _shown_keys = True
         link = _find_affiliate_link(r) or f"https://shopmy.us/shop/{SHOPMY_USERNAME}"
         brand = r.get("AllBrand_name") or ""
@@ -161,7 +163,7 @@ def fetch_shopmy_products(debug=False):
     urls = [base, f"{base}?tab=collections"]
     blobs = []
     cards = []
-    print(f"Version 5: checking {base}")
+    print(f"Version 6: checking {base}")
 
     def on_response(resp):
         if "shopmy" not in resp.url:
@@ -209,6 +211,8 @@ def fetch_shopmy_products(debug=False):
                 print(f"Asked {api.split('/api/')[-1][:90]} -> status {res.get('status')}")
             except Exception as e:
                 print(f"Asked {api} -> failed: {e}")
+        if debug:
+            explore_collections(page, blobs)
         browser.close()
 
     print("Data the page loaded:")
@@ -242,6 +246,31 @@ def fetch_shopmy_products(debug=False):
                 found.setdefault(key, {"key": key, "title": c["title"][:100],
                                        "image": c["image"], "link": c["link"]})
     return list(found.values())
+
+
+def explore_collections(page, blobs):
+    """Debug only: show what a collection and its items look like."""
+    api = f"https://apiv3.shopmy.us/api/Shop/Collections?Curator_username={SHOPMY_USERNAME}&limit=24"
+    res = page.evaluate(FETCH_JS, api)
+    print(f"[debug] COLLECTIONS: {json.dumps(res.get('json'))[:2500]}")
+    # Open the first collection the way a shopper would, and record what loads
+    start = len(blobs)
+    try:
+        page.goto(f"https://shopmy.us/shop/{SHOPMY_USERNAME}", wait_until="domcontentloaded", timeout=90000)
+        page.wait_for_timeout(8000)
+        page.get_by_text("View Full Collection").first.click(timeout=15000)
+        page.wait_for_timeout(10000)
+        print(f"[debug] opened collection page: {page.url}")
+    except Exception as e:
+        print(f"[debug] couldn't open a collection: {e}")
+    for u, b in blobs[start:]:
+        if "pa.shopmy" in u or "rudder" in u or "Events" in u:
+            continue
+        print(f"[debug] COLLECTION DATA {u.split('/api/')[-1][:120]}")
+        print(f"        {json.dumps(b)[:1500]}")
+    links = page.evaluate("""() => [...document.querySelectorAll('a[href]')].map(a => a.href)
+        .filter(h => /go\\.shopmy|shopmy\\.us\\/p-|\\/p\\//.test(h)).slice(0, 5)""")
+    print(f"[debug] affiliate-looking links on page: {links}")
 
 
 SCROLL_JS = """
