@@ -21,6 +21,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -81,6 +82,8 @@ def pins_in(data, found, collection_name, under_pin_list=False):
                     "image": image,
                     "link": f"https://go.shopmy.us/p-{pid}",
                     "collection": collection_name,
+                    "product_id": data.get("Product_id"),
+                    "category": data.get("Product_category") or "",
                 })
         for k, v in data.items():
             pins_in(v, found, collection_name, under_pin_list="pin" in k.lower())
@@ -91,7 +94,7 @@ def pins_in(data, found, collection_name, under_pin_list=False):
 
 def fetch_shopmy_products(debug=False):
     shop = f"https://shopmy.us/shop/{SHOPMY_USERNAME}"
-    print(f"Version 8: checking {shop}")
+    print(f"Version 9: checking {shop}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -136,9 +139,107 @@ def fetch_shopmy_products(debug=False):
             print(f"  {name}: {len(found) - before} items")
             if debug and detail and cid == next(iter(collections)):
                 print(f"[debug] collection keys: {list(detail.keys())}")
+
+        # 3. Look up each product's ShopMy department (Footwear, Haircare, Makeup...)
+        departments = {}
+        for n in range(10):
+            data = get(f"Shop/products?Curator_username={SHOPMY_USERNAME}&page={n}&limit=100") or {}
+            added = 0
+            for r in data.get("results") or []:
+                pid = r.get("Product_id") or r.get("id")
+                if pid and pid not in departments:
+                    departments[pid] = (r.get("Department_name") or "", r.get("Category_name") or "")
+                    added += 1
+            if not added:
+                break
         browser.close()
 
-    return list(found.values())
+    items = list(found.values())
+    for it in items:
+        dept, cat = departments.get(it.get("product_id"), ("", ""))
+        it["department"] = dept
+        it["category"] = it.get("category") or cat
+        it["board"] = choose_board(it)
+        it["board_id"] = BOARDS[it["board"]]
+    counts = {}
+    for it in items:
+        counts[it["board"]] = counts.get(it["board"], 0) + 1
+    print("Boards: " + ", ".join(f"{b}: {n}" for b, n in counts.items()))
+    return items
+
+
+# ---------------------------------------------------------------- which board
+BOARDS = {
+    "All my Favs": "1138003468282937193",
+    "Shoes!!": "1138003468282937317",
+    "Activewear & Accessories": "1138003468282937316",
+    "Makeup & Skincare": "1138003468282937314",
+    "Hair Favs": "1138003468282937313",
+}
+DEFAULT_BOARD = "All my Favs"
+
+# ShopMy department -> board
+DEPARTMENT_BOARDS = {
+    "footwear": "Shoes!!",
+    "shoes": "Shoes!!",
+    "haircare": "Hair Favs",
+    "hair care": "Hair Favs",
+    "hair tools": "Hair Favs",
+    "makeup": "Makeup & Skincare",
+    "skincare": "Makeup & Skincare",
+    "fragrance": "Makeup & Skincare",
+    "bath & body": "Makeup & Skincare",
+    "nails": "Makeup & Skincare",
+    "beauty": "Makeup & Skincare",
+    "activewear": "Activewear & Accessories",
+    "fitness equipment": "Activewear & Accessories",
+    "bags & purses": "Activewear & Accessories",
+    "jewelry": "Activewear & Accessories",
+    "accessories": "Activewear & Accessories",
+}
+
+CLOTHING_DEPARTMENTS = {"apparel", "coats & outerwear", "swimwear", "sleep & loungewear",
+                        "dresses", "tops", "bottoms", "denim", "intimates", "clothing"}
+
+# Words in the product's category or name -> board (checked in this order)
+KEYWORD_BOARDS = [
+    ("Shoes!!", r"shoes?|boots?|booties?|sneakers?|heels?|sandals?|loafers?|flats|slippers?|mules?|clogs?|pumps"),
+    ("Hair Favs", r"hair|shampoo|conditioner|texturi[sz]ing|volumi[sz]er|dry shampoo|curl\w*|blowout|scalp"),
+    ("Makeup & Skincare", r"makeup|mascara|lash\w*|eyelash|lip\w*|blush|bronzer|foundation|concealer|"
+                          r"highlighter|eyeliner|eyeshadow|brow|serum|moisturi[sz]er|cleanser|sunscreen|spf|"
+                          r"skincare|skin care|toner|perfume|fragrance|nail\w*|cream"),
+    ("Activewear & Accessories", r"bags?|purses?|totes?|clutch|backpack|jewelry|necklaces?|earrings?|bracelets?|"
+                                 r"sunglasses|hats?|caps?|belts?|scarf|scarves|wallet|watch|"
+                                 r"leggings?|sports bra|workout|activewear|athletic|yoga|gym"),
+]
+
+# Collection names that hint at a board, used when the product itself isn't clear
+COLLECTION_BOARDS = [
+    ("Hair Favs", r"hair"),
+    ("Makeup & Skincare", r"makeup|skin|beauty"),
+    ("Activewear & Accessories", r"workout|wellness|active|gym"),
+    ("Shoes!!", r"shoe"),
+]
+
+
+def _match(rules, text):
+    for board, pattern in rules:
+        if re.search(rf"\b(?:{pattern})\b", text, re.I):
+            return board
+    return None
+
+
+def choose_board(item):
+    dept = (item.get("department") or "").strip().lower()
+    if dept in DEPARTMENT_BOARDS:
+        return DEPARTMENT_BOARDS[dept]
+    if dept in CLOTHING_DEPARTMENTS:  # clothes go to the main board unless the category says otherwise
+        hit = _match(KEYWORD_BOARDS, item.get("category") or "")
+        return hit or DEFAULT_BOARD
+    return (_match(KEYWORD_BOARDS, item.get("category") or "")
+            or _match(COLLECTION_BOARDS, item.get("collection") or "")
+            or _match(KEYWORD_BOARDS, re.split(r"\s+in\s+", item.get("title") or "")[0])  # skip "in Cream" etc.
+            or DEFAULT_BOARD)
 
 
 FETCH_JS = """
@@ -186,6 +287,8 @@ def pin_fields(product):
         "image": product["image"],
         "alt_text": product["title"][:500],
         "collection": product.get("collection", ""),
+        "board": product.get("board", DEFAULT_BOARD),
+        "board_id": product.get("board_id", BOARDS[DEFAULT_BOARD]),
     }
 
 
@@ -290,7 +393,7 @@ def main():
 
     if args.dry_run:
         for p in new:
-            print(f"Would pin: {p['title']} -> {p['link']}   [{p['collection']}]")
+            print(f"Would pin: {p['title']} -> {p['board']}   ({p['link']})")
         return
 
     if MAKE_WEBHOOK_URL:
