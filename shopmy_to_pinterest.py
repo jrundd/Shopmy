@@ -1,5 +1,5 @@
 """
-ShopMy -> Pinterest auto-pinner  (version 7)
+ShopMy -> Pinterest auto-pinner  (version 8)
 
 Reads the items in your PUBLIC ShopMy collections and creates a Pinterest pin
 for every item it hasn't pinned before. Each pin links to that item's ShopMy
@@ -36,6 +36,8 @@ PINTEREST_ACCESS_TOKEN = os.environ.get("PINTEREST_ACCESS_TOKEN", "").strip()
 PINTEREST_REFRESH_TOKEN = os.environ.get("PINTEREST_REFRESH_TOKEN", "").strip()
 PINTEREST_APP_ID = os.environ.get("PINTEREST_APP_ID", "").strip()
 PINTEREST_APP_SECRET = os.environ.get("PINTEREST_APP_SECRET", "").strip()
+# Easiest option: a Make.com webhook that creates the pin for you (see README)
+MAKE_WEBHOOK_URL = os.environ.get("MAKE_WEBHOOK_URL", "").strip()
 
 MAX_PINS_PER_RUN = int(os.environ.get("MAX_PINS_PER_RUN") or "5")
 DESCRIPTION_TEMPLATE = os.environ.get("DESCRIPTION_TEMPLATE") or (
@@ -70,6 +72,7 @@ def pins_in(data, found, collection_name, under_pin_list=False):
                     nice = f"{brand} {product}"
                 else:
                     nice = title.replace(" - ", " ").strip()
+                nice = " ".join(nice.split())  # flatten line breaks and extra spaces
                 key = f"pin-{pid}"
                 found.setdefault(key, {
                     "key": key,
@@ -87,7 +90,7 @@ def pins_in(data, found, collection_name, under_pin_list=False):
 
 def fetch_shopmy_products(debug=False):
     shop = f"https://shopmy.us/shop/{SHOPMY_USERNAME}"
-    print(f"Version 7: checking {shop}")
+    print(f"Version 8: checking {shop}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -174,6 +177,24 @@ def list_boards(token):
         print(f"{b['id']}  {b['name']}")
 
 
+def pin_fields(product):
+    return {
+        "title": product["title"],
+        "description": DESCRIPTION_TEMPLATE.format(title=product["title"])[:500],
+        "link": product["link"],
+        "image": product["image"],
+        "alt_text": product["title"][:500],
+        "collection": product.get("collection", ""),
+    }
+
+
+def send_to_make(product):
+    r = requests.post(MAKE_WEBHOOK_URL, json=pin_fields(product), timeout=60)
+    if not r.ok:
+        raise RuntimeError(f"Make error {r.status_code}: {r.text[:300]}")
+    return "sent to Make"
+
+
 def create_pin(token, product):
     body = {
         "board_id": PINTEREST_BOARD_ID,
@@ -207,6 +228,8 @@ def main():
     ap.add_argument("--list-boards", action="store_true")
     ap.add_argument("--pin-existing", action="store_true")
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--send-sample", action="store_true",
+                    help="send one item to Make so it can learn the fields (nothing is recorded)")
     args = ap.parse_args()
 
     if args.list_boards:
@@ -219,6 +242,14 @@ def main():
     print(f"Found {len(products)} items in your ShopMy collections")
     if not products:
         sys.exit("No items found. Run the test again with --debug and send the output to Claude.")
+
+    if args.send_sample:
+        if not MAKE_WEBHOOK_URL:
+            sys.exit("Add the MAKE_WEBHOOK_URL secret first.")
+        print(f"Sending sample to Make: {products[0]['title']}")
+        send_to_make(products[0])
+        print("Sent. Go back to Make; it should say it determined the data structure.")
+        return
 
     state = load_state()
     first_run = state is None
@@ -242,14 +273,18 @@ def main():
             print(f"Would pin: {p['title']} -> {p['link']}   [{p['collection']}]")
         return
 
-    if not (PINTEREST_ACCESS_TOKEN and PINTEREST_BOARD_ID):
-        print("Pinterest isn't set up yet (missing PINTEREST_ACCESS_TOKEN or PINTEREST_BOARD_ID), so nothing was pinned.")
+    if MAKE_WEBHOOK_URL:
+        post = send_to_make
+    elif PINTEREST_ACCESS_TOKEN and PINTEREST_BOARD_ID:
+        token = refresh_access_token()
+        post = lambda prod: create_pin(token, prod)
+    else:
+        print("Pinterest isn't connected yet (add the MAKE_WEBHOOK_URL secret), so nothing was pinned.")
         return
-    token = refresh_access_token()
 
     for p in new[:MAX_PINS_PER_RUN]:
         try:
-            pin_id = create_pin(token, p)
+            pin_id = post(p)
             state["pinned"][p["key"]] = {"title": p["title"], "pin_id": pin_id}
             save_state(state)
             print(f"Pinned: {p['title']} (pin {pin_id})")
