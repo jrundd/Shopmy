@@ -111,12 +111,12 @@ def fetch_shopmy_products(debug=False):
     urls = [base, f"{base}?tab=collections"]
     blobs = []
     cards = []
-    print(f"Version 3: checking {base}")
+    print(f"Version 4: checking {base}")
 
     def on_response(resp):
         if "shopmy" not in resp.url:
             return
-        if "json" not in (resp.headers.get("content-type") or ""):
+        if resp.request.resource_type not in ("xhr", "fetch"):
             return
         try:
             blobs.append((resp.url, resp.json()))
@@ -136,9 +136,10 @@ def fetch_shopmy_products(debug=False):
                 print(f"Couldn't load {url}: {e}")
                 continue
             page.wait_for_timeout(8000)
-            # Scroll so lazily-loaded products come in
+            # Scroll so lazily-loaded products come in (the page and any inner scroll areas)
             for _ in range(10):
                 page.mouse.wheel(0, 4000)
+                page.evaluate(SCROLL_JS)
                 page.wait_for_timeout(1500)
             page.wait_for_timeout(3000)
             print(f"Loaded {url} ({len(blobs)} data responses so far)")
@@ -148,15 +149,30 @@ def fetch_shopmy_products(debug=False):
                 page.screenshot(path=f"debug/page_{urls.index(url)}.png", full_page=False)
                 text = page.inner_text("body")[:1500].replace("\n", " | ")
                 print(f"[debug] page text: {text}")
+        # Ask ShopMy's product list directly, the same way the page does
+        for api in API_GUESSES:
+            api = api.format(u=SHOPMY_USERNAME)
+            try:
+                res = page.evaluate(FETCH_JS, api)
+                if res.get("json") is not None:
+                    blobs.append((api, res["json"]))
+                print(f"Asked {api.split('/api/')[-1][:90]} -> status {res.get('status')}")
+            except Exception as e:
+                print(f"Asked {api} -> failed: {e}")
         browser.close()
+
+    print("Data the page loaded:")
+    for u, _ in blobs:
+        print(f"  {u.split('?')[0].split('/api/')[-1]}  ?{u.split('?', 1)[1][:80] if '?' in u else ''}")
 
     if debug:
         Path("debug").mkdir(exist_ok=True)
         for i, (u, b) in enumerate(blobs):
             Path(f"debug/response_{i:02d}.json").write_text(
                 json.dumps({"url": u, "body": b}, indent=2)[:2_000_000])
-            print(f"[debug] response {i}: {u[:150]}")
-            print(f"        {json.dumps(b)[:400]}")
+            if any(w in u.lower() for w in ("product", "pin", "collection", "section")):
+                print(f"[debug] response {i}: {u[:150]}")
+                print(f"        {json.dumps(b)[:700]}")
         print(f"[debug] {len(cards)} product cards seen on the page")
         for c in cards[:5]:
             print(f"        {c}")
@@ -172,6 +188,28 @@ def fetch_shopmy_products(debug=False):
                 found.setdefault(key, {"key": key, "title": c["title"][:100],
                                        "image": c["image"], "link": c["link"]})
     return list(found.values())
+
+
+SCROLL_JS = """
+() => { for (const el of document.querySelectorAll('*')) {
+  if (el.scrollHeight > el.clientHeight + 50 && /(auto|scroll)/.test(getComputedStyle(el).overflowY)) el.scrollTop += 4000; } }
+"""
+
+FETCH_JS = """
+async (url) => {
+  try {
+    const r = await fetch(url, {credentials: 'include'});
+    let j = null; try { j = await r.json(); } catch (e) {}
+    return {status: r.status, json: j};
+  } catch (e) { return {status: 'error ' + e}; }
+}
+"""
+
+API_GUESSES = [
+    "https://apiv3.shopmy.us/api/Shop/products?Curator_username={u}",
+    "https://apiv3.shopmy.us/api/Shop/products?Curator_username={u}&page=0&limit=100",
+    "https://apiv3.shopmy.us/api/Shop/products?Curator_username={u}&skipRefinements=true",
+]
 
 
 # Finds every link on the page that contains a product image.
