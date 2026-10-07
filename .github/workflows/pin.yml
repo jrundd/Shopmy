@@ -1,0 +1,56 @@
+# Lives at .github/workflows/pin.yml in your GitHub repository.
+# Runs by itself every 2 hours, and whenever you click "Run workflow" in the Actions tab.
+name: ShopMy to Pinterest
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What should this run do?"
+        type: choice
+        default: "Test run (posts nothing)"
+        options:
+          - "Test run (posts nothing)"
+          - "List my Pinterest boards"
+          - "Normal run"
+
+permissions:
+  contents: write   # lets the job remember which products were already pinned
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt && python -m playwright install --with-deps chromium
+      - name: Run the pinner
+        run: |
+          case "${{ inputs.mode }}" in
+            "Test run (posts nothing)") python shopmy_to_pinterest.py --dry-run --pin-existing --debug ;;
+            "List my Pinterest boards") python shopmy_to_pinterest.py --list-boards ;;
+            *) python shopmy_to_pinterest.py ;;
+          esac
+        env:
+          SHOPMY_USERNAME: ${{ secrets.SHOPMY_USERNAME }}
+          PINTEREST_BOARD_ID: ${{ secrets.PINTEREST_BOARD_ID }}
+          PINTEREST_ACCESS_TOKEN: ${{ secrets.PINTEREST_ACCESS_TOKEN }}
+          PINTEREST_REFRESH_TOKEN: ${{ secrets.PINTEREST_REFRESH_TOKEN }}
+          PINTEREST_APP_ID: ${{ secrets.PINTEREST_APP_ID }}
+          PINTEREST_APP_SECRET: ${{ secrets.PINTEREST_APP_SECRET }}
+      - name: Keep the raw page data from test runs
+        if: always() && hashFiles('debug/*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-data
+          path: debug/
+      - name: Remember which products were pinned
+        run: |
+          git config user.name "pin-bot"
+          git config user.email "pin-bot@users.noreply.github.com"
+          git add pinned.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "Update pinned products" && git push)
