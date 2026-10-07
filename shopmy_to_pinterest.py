@@ -94,12 +94,23 @@ def pins_in(data, found, collection_name, under_pin_list=False):
             pins_in(v, found, collection_name, under_pin_list)
 
 
+def launch_browser(p):
+    """Use the Chrome that GitHub's computers already have; download one only if that fails."""
+    try:
+        return p.chromium.launch(channel="chrome")
+    except Exception as e:
+        print(f"Built-in Chrome not available ({str(e)[:80]}); downloading a browser instead")
+        import subprocess
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False, timeout=600)
+        return p.chromium.launch()
+
+
 def fetch_shopmy_products(debug=False):
     shop = f"https://shopmy.us/shop/{SHOPMY_USERNAME}"
     print(f"Version 10: checking {shop}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = launch_browser(p)
         page = browser.new_page()
         # Open the shop once so requests below look like they come from the page
         try:
