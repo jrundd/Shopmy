@@ -84,6 +84,8 @@ def pins_in(data, found, collection_name, under_pin_list=False):
                     "collection": collection_name,
                     "product_id": data.get("Product_id"),
                     "category": data.get("Product_category") or "",
+                    "orig_image": image,
+                    "other_images": [(data.get("detailed_image_data") or {}).get("image")],
                 })
         for k, v in data.items():
             pins_in(v, found, collection_name, under_pin_list="pin" in k.lower())
@@ -94,7 +96,7 @@ def pins_in(data, found, collection_name, under_pin_list=False):
 
 def fetch_shopmy_products(debug=False):
     shop = f"https://shopmy.us/shop/{SHOPMY_USERNAME}"
-    print(f"Version 9: checking {shop}")
+    print(f"Version 10: checking {shop}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -142,6 +144,7 @@ def fetch_shopmy_products(debug=False):
 
         # 3. Look up each product's ShopMy department (Footwear, Haircare, Makeup...)
         departments = {}
+        product_images = {}
         for n in range(10):
             data = get(f"Shop/products?Curator_username={SHOPMY_USERNAME}&page={n}&limit=100") or {}
             added = 0
@@ -149,6 +152,8 @@ def fetch_shopmy_products(debug=False):
                 pid = r.get("Product_id") or r.get("id")
                 if pid and pid not in departments:
                     departments[pid] = (r.get("Department_name") or "", r.get("Category_name") or "")
+                    product_images[pid] = [r.get("image")] + [
+                        i.get("image") for i in (r.get("images") or []) if isinstance(i, dict)]
                     added += 1
             if not added:
                 break
@@ -161,11 +166,21 @@ def fetch_shopmy_products(debug=False):
         it["category"] = it.get("category") or cat
         it["board"] = choose_board(it)
         it["board_id"] = BOARDS[it["board"]]
+        candidates = [it["orig_image"]] + it.pop("other_images", []) + product_images.get(it.get("product_id"), [])
+        it["image"] = next((u for u in candidates if pinterest_ok_image(u)), None)
+    fixed = sum(1 for it in items if it["image"] and it["image"] != it["orig_image"])
+    none = sum(1 for it in items if not it["image"])
+    print(f"Photos: {fixed} items switched to a photo Pinterest accepts, {none} items have no usable photo (skipped)")
     counts = {}
     for it in items:
         counts[it["board"]] = counts.get(it["board"], 0) + 1
     print("Boards: " + ", ".join(f"{b}: {n}" for b, n in counts.items()))
     return items
+
+
+def pinterest_ok_image(url):
+    """Pinterest refuses photos stored on Amazon S3 (where ShopMy keeps its own copies)."""
+    return _is_http(url) and "amazonaws.com" not in url
 
 
 # ---------------------------------------------------------------- which board
@@ -352,14 +367,35 @@ def main():
     if args.send_sample:
         if not MAKE_WEBHOOK_URL:
             sys.exit("Add the MAKE_WEBHOOK_URL secret first.")
-        print(f"Sending sample to Make: {products[0]['title']}")
-        send_to_make(products[0])
+        sample = next(p for p in products if p["image"])
+        print(f"Sending sample to Make: {sample['title']}")
+        send_to_make(sample)
         print("Sent. Go back to Make; it should say it determined the data structure.")
         return
 
     state = load_state()
     first_run = state is None
     state = state or {"pinned": {}}
+
+    # One-time fix: items sent before the photo fix whose photo Pinterest refused go back in the queue
+    if state.get("pinned") and not state.get("photo_fix_done"):
+        requeued = 0
+        for p in products:
+            rec = state["pinned"].get(p["key"])
+            if rec and rec.get("pin_id") == "sent to Make" and not pinterest_ok_image(p["orig_image"]):
+                state["pinned"][p["key"]] = {"title": p["title"], "pin_id": None, "seeded": True}
+                requeued += 1
+        state["photo_fix_done"] = True
+        print(f"Re-queued {requeued} items that Pinterest refused because of their photo")
+        if not args.dry_run:
+            save_state(state)
+
+    # Items with no photo Pinterest accepts can't be pinned, so leave them out
+    unusable = [p for p in products if not p["image"]]
+    products = [p for p in products if p["image"]]
+    for p in unusable:
+        if p["key"] not in state["pinned"] or state["pinned"][p["key"]].get("seeded"):
+            state["pinned"][p["key"]] = {"title": p["title"], "pin_id": None, "no_usable_photo": True}
 
     if args.start_backlog:
         # Remember everything currently there, then switch on backlog mode so
