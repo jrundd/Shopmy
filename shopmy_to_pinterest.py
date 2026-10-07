@@ -47,6 +47,7 @@ DESCRIPTION_TEMPLATE = os.environ.get("DESCRIPTION_TEMPLATE") or (
 STATE_FILE = Path(os.environ.get("STATE_FILE") or "pinned.json")
 PINTEREST_API = "https://api.pinterest.com/v5"
 SHOPMY_API = "https://apiv3.shopmy.us/api"
+TEST_SAMPLE_KEY = "pin-90373467"  # the Wilfred sweater, already pinned during setup
 
 
 # ---------------------------------------------------------------- ShopMy side
@@ -228,6 +229,8 @@ def main():
     ap.add_argument("--list-boards", action="store_true")
     ap.add_argument("--pin-existing", action="store_true")
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--start-backlog", action="store_true",
+                    help="also pin items that were already in your collections, a few per run")
     ap.add_argument("--send-sample", action="store_true",
                     help="send one item to Make so it can learn the fields (nothing is recorded)")
     args = ap.parse_args()
@@ -255,6 +258,20 @@ def main():
     first_run = state is None
     state = state or {"pinned": {}}
 
+    if args.start_backlog:
+        # Remember everything currently there, then switch on backlog mode so
+        # every run pins a few of the older items as well as anything new.
+        for p in products:
+            state["pinned"].setdefault(p["key"], {"title": p["title"], "pin_id": None, "seeded": True})
+        # The test sample was already pinned by hand, so don't pin it twice
+        if TEST_SAMPLE_KEY in state["pinned"] and state["pinned"][TEST_SAMPLE_KEY].get("seeded"):
+            state["pinned"][TEST_SAMPLE_KEY] = {"title": "test sample", "pin_id": "sent as sample"}
+        state["backlog"] = True
+        save_state(state)
+        waiting = sum(1 for v in state["pinned"].values() if v.get("seeded"))
+        print(f"Backlog mode on: {waiting} existing items will be pinned, {MAX_PINS_PER_RUN} per run.")
+        first_run = False
+
     if first_run and not args.pin_existing:
         for p in products:
             state["pinned"][p["key"]] = {"title": p["title"], "pin_id": None, "seeded": True}
@@ -264,7 +281,10 @@ def main():
         return
 
     new = [p for p in products if p["key"] not in state["pinned"]]
-    print(f"{len(new)} new item(s)")
+    if state.get("backlog"):
+        # Older items go after anything brand new
+        new += [p for p in products if state["pinned"].get(p["key"], {}).get("seeded")]
+    print(f"{len(new)} item(s) waiting to be pinned")
     if not new:
         return
 
