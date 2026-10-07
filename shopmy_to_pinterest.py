@@ -106,12 +106,62 @@ def extract_products(data, found):
             extract_products(v, found)
 
 
+def _find_affiliate_link(obj):
+    """Look anywhere inside a product for a ShopMy affiliate link or pin ID."""
+    if isinstance(obj, str):
+        if _is_http(obj) and ("go.shopmy.us" in obj or "shopmy.us/p-" in obj):
+            return obj
+        return None
+    if isinstance(obj, dict):
+        for k in ("Pin_id", "pin_id", "PinId"):
+            if obj.get(k):
+                return f"https://go.shopmy.us/p-{obj[k]}"
+        for k in ("pin", "pins", "Pins"):
+            v = obj.get(k)
+            if isinstance(v, dict) and v.get("id"):
+                return f"https://go.shopmy.us/p-{v['id']}"
+            if isinstance(v, list) and v and isinstance(v[0], dict) and v[0].get("id"):
+                return f"https://go.shopmy.us/p-{v[0]['id']}"
+        for v in obj.values():
+            hit = _find_affiliate_link(v)
+            if hit:
+                return hit
+    if isinstance(obj, list):
+        for v in obj:
+            hit = _find_affiliate_link(v)
+            if hit:
+                return hit
+    return None
+
+
+_shown_keys = False
+
+
+def extract_shop_results(blob, found, debug=False):
+    """Read ShopMy's own product list: {"results": [{"id", "title", "image", ...}]}."""
+    global _shown_keys
+    results = blob.get("results") if isinstance(blob, dict) else None
+    if not isinstance(results, list):
+        return
+    for r in results:
+        if not isinstance(r, dict) or not r.get("title") or not _is_http(r.get("image")):
+            continue
+        if debug and not _shown_keys:
+            print(f"[debug] product fields: {list(r.keys())}")
+            _shown_keys = True
+        link = _find_affiliate_link(r) or f"https://shopmy.us/shop/{SHOPMY_USERNAME}"
+        brand = r.get("AllBrand_name") or ""
+        title = f"{brand} {r['title']}".strip() if brand and brand.lower() not in r["title"].lower() else r["title"]
+        key = f"shopmy-{r.get('id') or hashlib.sha1(r['title'].encode()).hexdigest()[:12]}"
+        found.setdefault(key, {"key": key, "title": title[:100], "image": r["image"], "link": link})
+
+
 def fetch_shopmy_products(debug=False):
     base = f"https://shopmy.us/shop/{SHOPMY_USERNAME}"
     urls = [base, f"{base}?tab=collections"]
     blobs = []
     cards = []
-    print(f"Version 4: checking {base}")
+    print(f"Version 5: checking {base}")
 
     def on_response(resp):
         if "shopmy" not in resp.url:
@@ -178,8 +228,12 @@ def fetch_shopmy_products(debug=False):
             print(f"        {c}")
 
     found = {}
-    for _, blob in blobs:
-        extract_products(blob, found)
+    for u, blob in blobs:
+        if "/api/Shop/products" in u and "refinements" not in u:
+            extract_shop_results(blob, found, debug)
+    if not found:
+        for _, blob in blobs:
+            extract_products(blob, found)
     if not found:
         # Fallback: use the product cards as shown on the page
         for c in cards:
