@@ -1,34 +1,28 @@
 {
   "pinned": {
     "pin-90373467": {
-      "title": "WILFRED SoftSpoke\u2122 Dear Wrap Sweater",
-      "pin_id": null,
-      "seeded": true
+      "title": "test sample",
+      "pin_id": "sent as sample"
     },
     "pin-90373567": {
       "title": "CITIZENS OF HUMANITY Palma Long Jean",
-      "pin_id": null,
-      "seeded": true
+      "pin_id": "sent to Make"
     },
     "pin-90375678": {
       "title": "Golightly Cardigan Wonder Yarn",
-      "pin_id": null,
-      "seeded": true
+      "pin_id": "sent to Make"
     },
     "pin-90375802": {
       "title": "ARITZIA Cozy Sweatfleece Mega Funnel Neck",
-      "pin_id": null,
-      "seeded": true
+      "pin_id": "sent to Make"
     },
     "pin-90376124": {
       "title": "Outlook Zip Mockneck Bigfoot Fleece",
-      "pin_id": null,
-      "seeded": true
+      "pin_id": "sent to Make"
     },
     "pin-90378311": {
       "title": "ARITZIA Essential Cashmere Relic Sweater",
-      "pin_id": null,
-      "seeded": true
+      "pin_id": "sent to Make"
     },
     "pin-90378704": {
       "title": "Denim Forum The '80s Comfy Denim Shirt",
@@ -1290,5 +1284,6 @@
       "pin_id": null,
       "seeded": true
     }
-  }
+  },
+  "backlog": true
 }
