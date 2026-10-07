@@ -15,6 +15,7 @@ on:
           - "Test run (posts nothing)"
           - "Send one sample to Make"
           - "Normal run"
+          - "Start pinning my existing items"
 
 permissions:
   contents: write   # lets the job remember which products were already pinned
@@ -33,6 +34,7 @@ jobs:
           case "${{ inputs.mode }}" in
             "Test run (posts nothing)") python shopmy_to_pinterest.py --dry-run --pin-existing ;;
             "Send one sample to Make") python shopmy_to_pinterest.py --send-sample ;;
+            "Start pinning my existing items") python shopmy_to_pinterest.py --start-backlog ;;
             *) python shopmy_to_pinterest.py ;;
           esac
         env:
