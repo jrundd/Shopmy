@@ -20,16 +20,24 @@ on:
 permissions:
   contents: write   # lets the job remember which products were already pinned
 
+concurrency:
+  group: pinner   # never run two at once, so they can't overwrite each other's records
+  cancel-in-progress: false
+
 jobs:
   pin:
     runs-on: ubuntu-latest
+    timeout-minutes: 20   # give up instead of hanging forever
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt && python -m playwright install --with-deps chromium
+      - name: Install
+        timeout-minutes: 5
+        run: pip install -r requirements.txt
       - name: Run the pinner
+        timeout-minutes: 12
         run: |
           case "${{ inputs.mode }}" in
             "Test run (posts nothing)") python shopmy_to_pinterest.py --dry-run --pin-existing ;;
@@ -56,4 +64,8 @@ jobs:
           git config user.name "pin-bot"
           git config user.email "pin-bot@users.noreply.github.com"
           git add pinned.json 2>/dev/null || true
-          git diff --cached --quiet || (git commit -m "Update pinned products" && git push)
+          if ! git diff --cached --quiet; then
+            git commit -m "Update pinned products"
+            # If files were edited on GitHub during the run, fold those in before saving
+            for i in 1 2 3; do git pull --rebase -X theirs && git push && break; sleep 5; done
+          fi
